@@ -1,0 +1,102 @@
+@bookism_HostAddress = http://localhost:5164
+
+### 1. Health Checks - Live (tidak menyentuh dependency)
+GET {{bookism_HostAddress}}/health/live
+Accept: application/json
+
+### 2. Health Checks - Ready (cek database & redis readiness)
+GET {{bookism_HostAddress}}/health/ready
+Accept: application/json
+
+### 3. Health Checks - Dependencies (cek detail dependency)
+GET {{bookism_HostAddress}}/health/dependencies
+Accept: application/json
+
+### 4. Register - Format Validasi Gagal (422 Unprocessable Entity)
+POST {{bookism_HostAddress}}/api/auth/register
+Content-Type: application/json
+Accept: application/json
+
+{
+  "username": "ab",
+  "email": "invalid-email-format",
+  "password": "123",
+  "confirmPassword": "456"
+}
+
+### 5. Register - Sukses Akun User Baru (200 OK via EF Core)
+POST {{bookism_HostAddress}}/api/auth/register
+Content-Type: application/json
+Accept: application/json
+
+{
+  "username": "reader_john",
+  "email": "john@example.com",
+  "password": "Password123!",
+  "confirmPassword": "Password123!"
+}
+
+### 6. Login - Administrator (Dapper Read + Pre-warm Cache User)
+POST {{bookism_HostAddress}}/api/auth/login
+Content-Type: application/json
+Accept: application/json
+
+{
+  "username": "brandnewshvt",
+  "password": "Password123!"
+}
+
+### 7. Session Introspection - Get Current User (Cache Hit via users:{id})
+GET {{bookism_HostAddress}}/api/auth/me
+Accept: application/json
+
+### 8. Get Books - Paginated & Relational Join (Cache Miss -> DB -> Cache Set)
+GET {{bookism_HostAddress}}/api/books?page=1&limit=5
+Accept: application/json
+
+### 9. Get Books - Panggilan Kedua (Cache Hit -> Cepat sub-milidetik dari Redis/RAM)
+GET {{bookism_HostAddress}}/api/books?page=1&limit=5
+Accept: application/json
+
+### 10. Get Book By ID - Detail Buku (Cache-Aside books:1)
+GET {{bookism_HostAddress}}/api/books/1
+Accept: application/json
+
+### 11. Create Book - Mutasi Admin (EF Core Write -> Invalidate Cache books:list:*)
+POST {{bookism_HostAddress}}/api/books
+Content-Type: application/json
+Accept: application/json
+
+{
+  "name": "Designing Data-Intensive Applications",
+  "summary": "The big ideas behind reliable, scalable, and maintainable systems.",
+  "language": "English",
+  "isbn10": "1449373321",
+  "isbn13": "978-1449373320",
+  "totalPages": 616,
+  "releaseDate": 2017,
+  "rating": 4.9,
+  "status": "Read",
+  "progress": 100,
+  "publisherId": 1,
+  "formatId": 1,
+  "authorIds": [1],
+  "categoryIds": [1, 2]
+}
+
+### 12. Get Todos - Paginated List (Dapper Read)
+GET {{bookism_HostAddress}}/api/todos?page=1&limit=10
+Accept: application/json
+
+### 13. Create Todo (EF Core Write)
+POST {{bookism_HostAddress}}/api/todos
+Content-Type: application/json
+Accept: application/json
+
+{
+  "title": "Membaca dokumentasi arsitektur Dapper dan EF Core"
+}
+
+### 14. Logout (Evict session cache users:{id})
+POST {{bookism_HostAddress}}/api/auth/logout
+Accept: application/json

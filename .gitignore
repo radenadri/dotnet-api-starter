@@ -1,0 +1,66 @@
+# ==============================================================================
+# .gitignore for .NET 8 / ASP.NET Core & Docker Project (Bookism)
+# Standard .NET gitignore template with container & environment exclusions
+# ==============================================================================
+
+# User-specific files
+*.rsuser
+*.suo
+*.user
+*.userosscache
+*.sln.docstates
+
+# Build results
+[Dd]ebug/
+[Dd]ebugPublic/
+[Rr]elease/
+[Rr]eleases/
+x64/
+x86/
+[Ww][Ii][Nn]32/
+[Aa][Rr][Mm]/
+[Aa][Rr][Mm]64/
+bld/
+[Bb]in/
+[Oo]bj/
+[Ll]og/
+[Ll]ogs/
+
+# Visual Studio files
+.vs/
+.vscode/
+.idea/
+*.DotSettings.user
+
+# Test results & code coverage
+TestResults/
+[Tt]est[Rr]esult*/
+coverage/
+*.coverage
+*.coveragexml
+*.opencover.xml
+
+# SonarQube cache & local scanner reports
+.sonarqube/
+.sonar/
+scripts/
+
+# macOS system files
+.DS_Store
+.AppleDouble
+.LSOverride
+._*
+
+# Environment and sensitive credential files
+.env
+.env.local
+.env.*.local
+*.pfx
+*.rsa
+
+# Docker persistent local volumes (if mounted to workspace)
+postgres_data/
+redis_data/
+
+# Agent and container logs
+.agents/

@@ -1,0 +1,29 @@
+# Build artifacts & compilation caches
+bin/
+obj/
+*.user
+*.suo
+*.userosscache
+*.sln.docstates
+
+# Git & IDE configs
+.git/
+.github/
+.idea/
+.vscode/
+
+# Environment files & secrets
+.env
+.env.local
+.env.*.local
+
+# Documentation & workspace temporary files
+guides/
+docs/
+brain/
+*.md
+
+# Docker compose files
+docker-compose*.yml
+Dockerfile*
+.dockerignore
