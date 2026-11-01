@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
@@ -19,9 +19,7 @@ builder.Services.AddDbContext<AppDbContext>(opt =>
     opt.UseNpgsql(builder.Configuration.GetConnectionString("DefaultConnection"))
        .UseSnakeCaseNamingConvention());
 
-// Caching: In-Memory L1 + Redis L2
-builder.Services.AddMemoryCache();
-
+// Caching: Redis Distributed Cache
 var redisConnectionStr = builder.Configuration.GetConnectionString("Redis");
 
 builder.Services.AddSingleton<IConnectionMultiplexer>(_ =>

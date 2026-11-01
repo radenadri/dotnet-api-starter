@@ -118,7 +118,7 @@ public class HealthController : ControllerBase
         }
         else
         {
-            // Graceful degradation: in-memory cache handles traffic
+            // Graceful degradation: database direct reads handle traffic without cache
             var degradedResponse = new HealthResponse(
                 Status: "DEGRADED",
                 Service: ServiceName,

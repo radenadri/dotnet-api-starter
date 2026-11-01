@@ -1,7 +1,6 @@
 using System.Text.Json;
 using FluentAssertions;
 using Microsoft.Extensions.Caching.Distributed;
-using Microsoft.Extensions.Caching.Memory;
 using Microsoft.Extensions.Logging.Abstractions;
 using Moq;
 using bookism.Services;
@@ -10,21 +9,18 @@ using Xunit;
 namespace bookism.Tests.Services;
 
 /// <summary>
-/// Unit tests for CacheService covering fallback mechanics and eviction.
+/// Unit tests for CacheService covering Redis operations and graceful degradation to null.
 /// </summary>
 public class CacheServiceTests
 {
     private readonly Mock<IDistributedCache> _distributedCacheMock;
-    private readonly IMemoryCache _memoryCache;
     private readonly CacheService _cacheService;
 
     public CacheServiceTests()
     {
         _distributedCacheMock = new Mock<IDistributedCache>();
-        _memoryCache = new MemoryCache(new MemoryCacheOptions());
         _cacheService = new CacheService(
             _distributedCacheMock.Object,
-            _memoryCache,
             NullLogger<CacheService>.Instance,
             null
         );
@@ -50,13 +46,10 @@ public class CacheServiceTests
     }
 
     [Fact]
-    public async Task GetAsync_WhenDistributedCacheThrows_ShouldFallbackToMemoryCache()
+    public async Task GetAsync_WhenDistributedCacheThrows_ShouldReturnNullGracefully()
     {
         // Arrange
-        var key = "fallback-key";
-        var sample = new TestPayload("memory-value");
-        _memoryCache.Set(key, sample);
-
+        var key = "failing-key";
         _distributedCacheMock
             .Setup(d => d.GetAsync(key, It.IsAny<CancellationToken>()))
             .ThrowsAsync(new Exception("Redis timeout"));
@@ -64,13 +57,12 @@ public class CacheServiceTests
         // Act
         var result = await _cacheService.GetAsync<TestPayload>(key);
 
-        // Assert
-        result.Should().NotBeNull();
-        result!.Data.Should().Be("memory-value");
+        // Assert: Returns null so caller bypasses cache and queries database directly
+        result.Should().BeNull();
     }
 
     [Fact]
-    public async Task SetAsync_ShouldWriteToMemoryAndDistributedCache()
+    public async Task SetAsync_ShouldWriteToDistributedCache()
     {
         // Arrange
         var key = "set-key";
@@ -80,43 +72,55 @@ public class CacheServiceTests
         await _cacheService.SetAsync(key, sample, TimeSpan.FromMinutes(5));
 
         // Assert
-        _memoryCache.TryGetValue(key, out TestPayload? memVal).Should().BeTrue();
-        memVal!.Data.Should().Be("store-value");
-        _distributedCacheMock.Verify(d => d.SetAsync(key, It.IsAny<byte[]>(), It.IsAny<DistributedCacheEntryOptions>(), It.IsAny<CancellationToken>()), Times.Once);
+        _distributedCacheMock.Verify(d => d.SetAsync(
+            key, 
+            It.IsAny<byte[]>(), 
+            It.IsAny<DistributedCacheEntryOptions>(), 
+            It.IsAny<CancellationToken>()), 
+            Times.Once);
     }
 
     [Fact]
-    public async Task RemoveAsync_ShouldRemoveFromMemoryAndDistributedCache()
+    public async Task SetAsync_WhenDistributedCacheThrows_ShouldNotThrowException()
+    {
+        // Arrange
+        var key = "set-failing-key";
+        var sample = new TestPayload("store-value");
+        _distributedCacheMock
+            .Setup(d => d.SetAsync(key, It.IsAny<byte[]>(), It.IsAny<DistributedCacheEntryOptions>(), It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("Redis connection dropped"));
+
+        // Act & Assert
+        var act = async () => await _cacheService.SetAsync(key, sample, TimeSpan.FromMinutes(5));
+        await act.Should().NotThrowAsync();
+    }
+
+    [Fact]
+    public async Task RemoveAsync_ShouldRemoveFromDistributedCache()
     {
         // Arrange
         var key = "remove-key";
-        _memoryCache.Set(key, new TestPayload("delete-me"));
 
         // Act
         await _cacheService.RemoveAsync(key);
 
         // Assert
-        _memoryCache.TryGetValue(key, out _).Should().BeFalse();
         _distributedCacheMock.Verify(d => d.RemoveAsync(key, It.IsAny<CancellationToken>()), Times.Once);
     }
 
     [Fact]
-    public async Task RemoveByPrefixAsync_ShouldEvictMatchingMemoryKeys()
+    public async Task RemoveAsync_WhenDistributedCacheThrows_ShouldNotThrowException()
     {
         // Arrange
-        await _cacheService.SetAsync("prefix:1", new TestPayload("1"), TimeSpan.FromMinutes(5));
-        await _cacheService.SetAsync("prefix:2", new TestPayload("2"), TimeSpan.FromMinutes(5));
-        await _cacheService.SetAsync("other:1", new TestPayload("3"), TimeSpan.FromMinutes(5));
+        var key = "remove-failing-key";
+        _distributedCacheMock
+            .Setup(d => d.RemoveAsync(key, It.IsAny<CancellationToken>()))
+            .ThrowsAsync(new Exception("Redis error"));
 
-        // Act
-        await _cacheService.RemoveByPrefixAsync("prefix:");
-
-        // Assert
-        _memoryCache.TryGetValue("prefix:1", out _).Should().BeFalse();
-        _memoryCache.TryGetValue("prefix:2", out _).Should().BeFalse();
-        _memoryCache.TryGetValue("other:1", out _).Should().BeTrue();
+        // Act & Assert
+        var act = async () => await _cacheService.RemoveAsync(key);
+        await act.Should().NotThrowAsync();
     }
 
     private record TestPayload(string Data);
 }
-

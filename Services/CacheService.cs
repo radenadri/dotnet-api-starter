@@ -1,26 +1,48 @@
-using System.Collections.Concurrent;
 using System.Text.Json;
 using Microsoft.Extensions.Caching.Distributed;
-using Microsoft.Extensions.Caching.Memory;
 using StackExchange.Redis;
 
 namespace bookism.Services;
 
 /// <summary>
-/// Production-grade resilient caching service:
-/// - L2 Distributed Cache via Redis (primary tier).
-/// - L1 In-Memory Cache via IMemoryCache (graceful fallback tier on Redis timeout/failure).
-/// Prevents cascading application failures during Redis outages.
+/// Service abstraction for distributed caching backed by Redis.
+/// Provides standardized JSON serialization, sliding/absolute TTL, and key pattern invalidation.
+/// </summary>
+public interface ICacheService
+{
+    /// <summary>
+    /// Retrieves a deserialized cached item by key from Redis.
+    /// Returns default(T) on cache miss or when Redis fails/timeouts (graceful DB bypass).
+    /// </summary>
+    Task<T?> GetAsync<T>(string key, CancellationToken ct = default);
+
+    /// <summary>
+    /// Persists an item to Redis cache with absolute and optional sliding expiration.
+    /// Fails gracefully with warning logging if Redis is unavailable.
+    /// </summary>
+    Task SetAsync<T>(string key, T value, TimeSpan absoluteExpiry, TimeSpan? slidingExpiry = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Evicts a specific key from Redis cache.
+    /// </summary>
+    Task RemoveAsync(string key, CancellationToken ct = default);
+
+    /// <summary>
+    /// Evicts all keys matching a specific prefix from Redis cache using non-blocking SCAN.
+    /// </summary>
+    Task RemoveByPrefixAsync(string prefix, CancellationToken ct = default);
+}
+
+/// <summary>
+/// Production-grade distributed caching service backed directly by Redis:
+/// - Cache-aside pattern: Returns null on Redis degradation/outage, allowing consumer services to query database directly.
+/// - Avoids in-memory state desynchronization across multi-replica container instances.
 /// </summary>
 public class CacheService : ICacheService
 {
     private readonly IDistributedCache _distributedCache;
-    private readonly IMemoryCache _memoryCache;
     private readonly IConnectionMultiplexer? _redisConnection;
     private readonly ILogger<CacheService> _logger;
-
-    // Track keys locally to allow prefix eviction on in-memory tier
-    private static readonly ConcurrentDictionary<string, byte> _memoryKeys = new();
 
     private static readonly JsonSerializerOptions _jsonOptions = new()
     {
@@ -29,19 +51,16 @@ public class CacheService : ICacheService
 
     public CacheService(
         IDistributedCache distributedCache,
-        IMemoryCache memoryCache,
         ILogger<CacheService> logger,
         IConnectionMultiplexer? redisConnection = null)
     {
         _distributedCache = distributedCache;
-        _memoryCache = memoryCache;
         _logger = logger;
         _redisConnection = redisConnection;
     }
 
     public async Task<T?> GetAsync<T>(string key, CancellationToken ct = default)
     {
-        // 1. Try reading from primary Redis tier
         try
         {
             var bytes = await _distributedCache.GetAsync(key, ct);
@@ -52,13 +71,7 @@ public class CacheService : ICacheService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Redis cache read failed for key {Key}. Falling back to memory cache.", key);
-        }
-
-        // 2. Fallback to L1 memory cache
-        if (_memoryCache.TryGetValue(key, out T? memoryValue))
-        {
-            return memoryValue;
+            _logger.LogWarning(ex, "Redis cache read failed for key {Key}. Bypassing cache to query database directly.", key);
         }
 
         return default;
@@ -68,20 +81,6 @@ public class CacheService : ICacheService
     {
         if (value == null) return;
 
-        // 1. Write to L1 in-memory tier
-        var memOptions = new MemoryCacheEntryOptions
-        {
-            AbsoluteExpirationRelativeToNow = absoluteExpiry
-        };
-        if (slidingExpiry.HasValue)
-        {
-            memOptions.SlidingExpiration = slidingExpiry.Value;
-        }
-
-        _memoryCache.Set(key, value, memOptions);
-        _memoryKeys.TryAdd(key, 0);
-
-        // 2. Write to L2 Redis tier
         try
         {
             var bytes = JsonSerializer.SerializeToUtf8Bytes(value, _jsonOptions);
@@ -98,17 +97,12 @@ public class CacheService : ICacheService
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Redis cache write failed for key {Key}. Value preserved in memory cache.", key);
+            _logger.LogWarning(ex, "Redis cache write failed for key {Key}. Value was not cached.", key);
         }
     }
 
     public async Task RemoveAsync(string key, CancellationToken ct = default)
     {
-        // Evict from memory
-        _memoryCache.Remove(key);
-        _memoryKeys.TryRemove(key, out _);
-
-        // Evict from Redis
         try
         {
             await _distributedCache.RemoveAsync(key, ct);
@@ -121,34 +115,29 @@ public class CacheService : ICacheService
 
     public async Task RemoveByPrefixAsync(string prefix, CancellationToken ct = default)
     {
-        // Evict matching prefix from memory cache
-        var matchingMemKeys = _memoryKeys.Keys.Where(k => k.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList();
-        foreach (var k in matchingMemKeys)
+        if (_redisConnection == null || !_redisConnection.IsConnected)
         {
-            _memoryCache.Remove(k);
-            _memoryKeys.TryRemove(k, out _);
+            _logger.LogWarning("Redis connection is unavailable. Skipping prefix eviction for pattern {Prefix}*.", prefix);
+            return;
         }
 
-        // Evict matching prefix from Redis using SCAN
-        if (_redisConnection != null && _redisConnection.IsConnected)
+        try
         {
-            try
-            {
-                var endpoints = _redisConnection.GetEndPoints();
-                var server = _redisConnection.GetServer(endpoints[0]);
-                var db = _redisConnection.GetDatabase();
+            var endpoints = _redisConnection.GetEndPoints();
+            if (endpoints.Length == 0) return;
 
-                var keys = server.Keys(pattern: prefix + "*").ToArray();
-                if (keys.Length > 0)
-                {
-                    await db.KeyDeleteAsync(keys);
-                }
-            }
-            catch (Exception ex)
+            var server = _redisConnection.GetServer(endpoints[0]);
+            var db = _redisConnection.GetDatabase();
+
+            var keys = server.Keys(pattern: prefix + "*").ToArray();
+            if (keys.Length > 0)
             {
-                _logger.LogWarning(ex, "Redis prefix eviction failed for pattern {Prefix}*.", prefix);
+                await db.KeyDeleteAsync(keys);
             }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Redis prefix eviction failed for pattern {Prefix}*.", prefix);
         }
     }
 }
-
