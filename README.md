@@ -1,6 +1,6 @@
 # .NET Core Web API Starter
 
-A robust, enterprise-ready RESTful Web API built on **ASP.NET Core 8 (.NET 8)**, featuring hybrid data access with **Entity Framework Core** and **Dapper**, in-memory caching with **Redis**, automated schema migrations, standardized JSON response envelopes, and structured health check probes for cloud-native orchestration.
+A robust, enterprise-ready RESTful Web API built on **ASP.NET Core 8 (.NET 8)**, featuring hybrid data access with **Entity Framework Core** and **Dapper**, distributed caching with **Redis** (with graceful database fallback), native **Rate Limiting**, automated schema migrations, standardized JSON response envelopes, and structured health check probes for cloud-native orchestration.
 
 ---
 
@@ -10,12 +10,17 @@ A robust, enterprise-ready RESTful Web API built on **ASP.NET Core 8 (.NET 8)**,
 - **Data Access Layer (Hybrid CQS)**:
   - **Entity Framework Core 8**: Domain model validation, transactional mutations, and database schema migrations.
   - **Dapper 2.1**: High-throughput read queries, projection, and zero-tracking overhead.
-- **Database**: PostgreSQL 17.
-- **Cache Engine**: Redis 7 (Cache-aside pattern with in-memory fallback).
+- **Database**: PostgreSQL 17 with snake_case naming conventions.
+- **Cache Engine**: Redis 7 (Cache-aside pattern with graceful database bypass on timeout or outage).
+- **Rate Limiting & Abuse Protection**:
+  - Native ASP.NET Core 8 rate limiting (`Microsoft.AspNetCore.RateLimiting`).
+  - Strict policy (`auth-policy`: 10 req/min) on authentication endpoints to prevent brute-force attacks.
+  - Public policy (`public-policy`: 60 req/min) on catalog endpoints with standardized RFC `429 Too Many Requests` and `Retry-After` headers.
 - **Authentication & Security**:
   - JWT Bearer Token stored in `HttpOnly; Secure; SameSite=Strict` cookies.
   - BCrypt password hashing.
   - OWASP BOLA/IDOR mitigation with user resource ownership validation (ABAC).
+  - Swagger UI integrated with Bearer token authorization.
 - **Validation**: FluentValidation with structured `422 Unprocessable Entity` error mapping.
 - **Response Format**: Standardized enterprise envelope format (`{ message, data, meta }`) with mandatory `camelCase` keys.
 - **Health Checks**: Segregated probes (`/health/live`, `/health/ready`, `/health/startup`, `/health/dependencies`) to prevent cascading pod restart loops.
@@ -34,7 +39,7 @@ A robust, enterprise-ready RESTful Web API built on **ASP.NET Core 8 (.NET 8)**,
 ├── Models/                 # Domain entity models (User, Book, Todo, Author, Category, etc.)
 ├── Requests/               # FluentValidation validators
 ├── Services/               # Business services & middlewares (Cache, Correlation, Auth, Book, Todo)
-├── guides/                 # Technical guides & cheatsheets (Controllers, EF Core vs Dapper)
+├── guides/                 # Technical guides & seed data (Controllers, EF Core vs Dapper, SQL dump)
 ├── tests/                  # Unit test suite (xUnit, Moq, FluentAssertions, Coverlet)
 ├── .github/workflows/      # GitHub Actions CI workflow (ci.yml)
 ├── Dockerfile              # Multi-stage container build (build, migrator, final)
@@ -85,7 +90,12 @@ A robust, enterprise-ready RESTful Web API built on **ASP.NET Core 8 (.NET 8)**,
    curl -i http://localhost:5164/health/ready
    ```
 
-5. **Stop Services**:
+5. **Import Starter Seed Data (Optional)**:
+   ```bash
+   docker exec -i bookism_postgres psql -U postgres -d bookshelf < guides/seed_data.sql
+   ```
+
+6. **Stop Services**:
    ```bash
    docker compose down
    # To remove persistent database and cache volumes as well:
@@ -106,12 +116,18 @@ A robust, enterprise-ready RESTful Web API built on **ASP.NET Core 8 (.NET 8)**,
    dotnet ef database update
    ```
 
-3. **Restore dependencies and run the API**:
+3. **Restore starter seed data (Optional)**:
+   ```bash
+   PGPASSWORD=postgres psql -h localhost -p 5432 -U postgres -d bookshelf -f guides/seed_data.sql
+   ```
+
+4. **Restore dependencies and run the API**:
    ```bash
    dotnet restore
    dotnet run
    ```
    The API will listen on the configured endpoint URLs (e.g., `http://localhost:5164` or `https://localhost:7164`).
+   Swagger documentation is available in development mode at `/swagger`.
 
 ---
 
@@ -173,9 +189,10 @@ The CI workflow is defined in [`.github/workflows/ci.yml`](.github/workflows/ci.
 
 ## API Standards & Technical Documentation
 
-For in-depth architectural patterns and coding conventions, refer to the [`guides/`](guides/) directory:
+For in-depth architectural patterns, coding conventions, and starter data, refer to the [`guides/`](guides/) directory:
 - **[guides/cheatsheet-controllers.md](guides/cheatsheet-controllers.md)**: RESTful URL conventions, Response Envelopes, Error Handling, Authentication, and Health Check Probes.
 - **[guides/cheatsheet-ef-dapper.md](guides/cheatsheet-ef-dapper.md)**: Hybrid CQS architecture, Single vs. Split Queries (`AsSplitQuery`), and CancellationTokens via `CommandDefinition`.
+- **[guides/seed_data.sql](guides/seed_data.sql)**: Starter SQL seed dump with initial users, books, authors, categories, and sequences.
 - **[bookism.http](bookism.http)**: Scratchpad for testing API endpoints directly from your IDE (VS Code / JetBrains Rider / Visual Studio).
 
 ---
