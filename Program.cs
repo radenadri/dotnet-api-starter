@@ -1,10 +1,14 @@
+using System.Globalization;
 using System.Text;
+using System.Threading.RateLimiting;
 using FluentValidation;
 using FluentValidation.AspNetCore;
 using Microsoft.AspNetCore.Authentication.JwtBearer;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.IdentityModel.Tokens;
+using Microsoft.OpenApi.Models;
 using StackExchange.Redis;
 using bookism.Controllers;
 using bookism.Data;
@@ -46,6 +50,48 @@ builder.Services.AddScoped<IBookService, BookService>();
 // FluentValidation
 builder.Services.AddFluentValidationAutoValidation();
 builder.Services.AddValidatorsFromAssemblyContaining<LoginDtoValidator>();
+
+// Built-in .NET 8 Rate Limiter (Protects auth and public endpoints against brute force/DoS)
+builder.Services.AddRateLimiter(opt =>
+{
+    // 1. Strict policy for sensitive mutation/auth endpoints (10 requests per minute)
+    opt.AddFixedWindowLimiter("auth-policy", policy =>
+    {
+        policy.PermitLimit = 10;
+        policy.Window = TimeSpan.FromMinutes(1);
+        policy.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        policy.QueueLimit = 0;
+    });
+
+    // 2. Standard policy for general public reads (60 requests per minute)
+    opt.AddFixedWindowLimiter("public-policy", policy =>
+    {
+        policy.PermitLimit = 60;
+        policy.Window = TimeSpan.FromMinutes(1);
+        policy.QueueProcessingOrder = QueueProcessingOrder.OldestFirst;
+        policy.QueueLimit = 5;
+    });
+
+    // Standardized 429 response matching organization error envelope and RFC Retry-After header
+    opt.OnRejected = async (context, cancellationToken) =>
+    {
+        context.HttpContext.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+
+        if (context.Lease.TryGetMetadata(MetadataName.RetryAfter, out var retryAfter))
+        {
+            context.HttpContext.Response.Headers.RetryAfter =
+                ((long)Math.Ceiling(retryAfter.TotalSeconds)).ToString(NumberFormatInfo.InvariantInfo);
+        }
+
+        var traceId = CorrelationMiddleware.GetTraceId(context.HttpContext);
+        var errorResponse = new ApiErrorResponse(new ApiErrorDetail(
+            Message: "Terlalu banyak permintaan (Rate limit exceeded). Silakan coba lagi nanti.",
+            TraceId: traceId
+        ));
+
+        await context.HttpContext.Response.WriteAsJsonAsync(errorResponse, cancellationToken);
+    };
+});
 
 // Auth via HttpOnly Cookie
 builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
@@ -109,7 +155,35 @@ builder.Services.Configure<ApiBehaviorOptions>(opt =>
 });
 
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(c =>
+{
+    c.SwaggerDoc("v1", new OpenApiInfo { Title = "Bookism API", Version = "v1" });
+
+    // Enable Bearer token authorization button in Swagger UI for developer convenience
+    c.AddSecurityDefinition("Bearer", new OpenApiSecurityScheme
+    {
+        Description = "JWT Authorization header using the Bearer scheme. Format: 'Bearer {token}' or via HttpOnly cookie.",
+        Name = "Authorization",
+        In = ParameterLocation.Header,
+        Type = SecuritySchemeType.ApiKey,
+        Scheme = "Bearer"
+    });
+
+    c.AddSecurityRequirement(new OpenApiSecurityRequirement
+    {
+        {
+            new OpenApiSecurityScheme
+            {
+                Reference = new OpenApiReference
+                {
+                    Type = ReferenceType.SecurityScheme,
+                    Id = "Bearer"
+                }
+            },
+            Array.Empty<string>()
+        }
+    });
+});
 
 // CORS credentials support
 builder.Services.AddCors(opt =>
@@ -136,6 +210,7 @@ if (app.Environment.IsDevelopment())
 }
 
 app.UseCors("DefaultCors");
+app.UseRateLimiter();
 app.UseAuthentication();
 app.UseAuthorization();
 app.MapControllers();

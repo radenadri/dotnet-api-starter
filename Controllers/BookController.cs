@@ -1,5 +1,6 @@
-using Microsoft.AspNetCore.Authorization;
+﻿using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
+using Microsoft.AspNetCore.RateLimiting;
 using bookism.Dto;
 using bookism.Services;
 
@@ -11,6 +12,7 @@ namespace bookism.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/books")]
+[EnableRateLimiting("public-policy")]
 public class BookController : ControllerBase
 {
     private readonly IBookService _bookService;

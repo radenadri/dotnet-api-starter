@@ -1,6 +1,6 @@
-using System.Security.Claims;
+﻿using System.Security.Claims;
 using Microsoft.AspNetCore.Authorization;
-using Microsoft.AspNetCore.Http;
+using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.AspNetCore.Mvc;
 using bookism.Dto;
 using bookism.Services;
@@ -13,6 +13,7 @@ namespace bookism.Controllers;
 /// </summary>
 [ApiController]
 [Route("api/auth")]
+[EnableRateLimiting("auth-policy")]
 public class AuthController : ControllerBase
 {
     private readonly IAuthService _auth;
